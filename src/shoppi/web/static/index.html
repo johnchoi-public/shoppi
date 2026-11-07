@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>shoppi calendar</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- Left: week calendar. Right: chat with the assistant. -->
+  <main class="layout">
+    <section class="calendar">
+      <header class="toolbar">
+        <div class="nav">
+          <button id="prev" aria-label="Previous week">&#8249;</button>
+          <button id="today">Today</button>
+          <button id="next" aria-label="Next week">&#8250;</button>
+        </div>
+        <h1 id="range-label"></h1>
+        <span id="tz-label" class="muted"></span>
+        <button id="new-event" class="primary">New event</button>
+      </header>
+
+      <!-- Day headers + all-day strip, then the scrollable hour grid. -->
+      <div class="week-head" id="week-head"></div>
+      <div class="grid-scroll" id="grid-scroll">
+        <div class="grid" id="grid">
+          <div class="hours" id="hours"></div>
+          <div class="days" id="days"></div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="chat">
+      <header class="chat-head">
+        <h2>Assistant</h2>
+        <button id="new-chat" class="link">New chat</button>
+      </header>
+      <div class="messages" id="messages" aria-live="polite">
+        <p class="hint">Try "what's on my calendar this week?" or "move my dentist appointment to Friday at 2pm".</p>
+      </div>
+      <form class="composer" id="composer">
+        <textarea id="input" rows="2" placeholder="Ask the assistant…" required></textarea>
+        <button type="submit" class="primary" id="send">Send</button>
+      </form>
+    </aside>
+  </main>
+
+  <!-- Create / edit event dialog -->
+  <dialog id="event-dialog">
+    <form method="dialog" id="event-form">
+      <h3 id="dialog-title">New event</h3>
+      <label>Title <input name="title" required maxlength="500"></label>
+      <div class="row">
+        <label>Start <input name="start" type="datetime-local" required step="300"></label>
+        <label>End <input name="end" type="datetime-local" required step="300"></label>
+      </div>
+      <label>Location <input name="location" maxlength="500"></label>
+      <label>Description <textarea name="description" rows="3"></textarea></label>
+      <p class="error" id="form-error" hidden></p>
+      <div class="actions">
+        <button type="button" id="delete-event" class="danger" hidden>Delete</button>
+        <span class="spacer"></span>
+        <button type="button" id="cancel">Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
