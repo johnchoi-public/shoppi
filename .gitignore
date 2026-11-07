@@ -5,6 +5,7 @@ __pycache__/
 # Local secrets: OAuth client file and the encrypted token store
 secrets/
 docs_store/chroma/
-*.md
 .DS_Store
 data/
+initial_mvp.md
+.venv/
