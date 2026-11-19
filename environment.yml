@@ -4,5 +4,6 @@ channels:
 dependencies:
   - python=3.11
   - pip
-  - setuptools
-  - wheel
+  - pip:
+      - -r requirements.txt
+      - -e .
