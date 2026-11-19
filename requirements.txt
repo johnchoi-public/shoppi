@@ -1,3 +1,9 @@
+# This file may be used to create an environment using:
+# $ conda create --name <env> --file <this file>
+python=3.11
+pip
+setuptools
+wheel
 # Plain pip format, so it works on macOS, Linux and Windows:
 #   pip install -r requirements.txt
 # environment.yml installs this file into a conda env.
