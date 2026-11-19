@@ -5,70 +5,60 @@ Every variable is prefixed with SHOPPI_ (see .env.example).
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SHOPPI_", env_file=".env", extra="ignore")
 
-    # --- Calendar backend ---
-    # "local" = the internal SQLite calendar; "google" = the user's Google Calendar.
-    calendar_provider: Literal["local", "google"] = "local"
-    # SQLAlchemy URL for the internal calendar. Swap for postgresql+psycopg://... later.
-    calendar_db_url: str = "sqlite:///data/calendar.db"
+    # --- Database (Postgres + pgvector) ---
+    # The web app connects as a non-owner role so row-level security applies to it.
+    database_url: str = "postgresql+psycopg://shoppi_app:shoppi_app_dev@localhost:5432/shoppi"
+    # Migrations run as the schema owner (creates tables, policies, triggers).
+    database_owner_url: str = "postgresql+psycopg://shoppi_owner:shoppi_owner_dev@localhost:5432/shoppi"
 
-    # Google OAuth "Desktop app" client file downloaded from Google Cloud Console.
-    google_client_secrets_file: Path = Path("secrets/client_secret.json")
+    # --- Web ---
+    # Public origin of the app; used to build OAuth redirect URLs and intake links.
+    base_url: str = "http://localhost:8000"
+    session_days: int = 14
+    # Set true when served over HTTPS so the session cookie is marked Secure.
+    cookie_secure: bool = False
 
-    # Fernet key used to encrypt the stored Google refresh token.
-    # Only required when calendar_provider == "google".
+    # Fernet key used to encrypt integration credentials (OAuth tokens, API keys).
+    # Generate with: python -m shoppi.integrations.credentials
     token_key: str | None = None
-    token_file: Path = Path("secrets/google_token.enc")
 
-    # IANA timezone name of the user. Used for date math and prompt injection.
-    timezone: str = "UTC"
+    # --- Google OAuth "Web application" client (optional) ---
+    # Enables "Sign in with Google" and the Google Calendar integration.
+    google_client_id: str | None = None
+    google_client_secret: str | None = None
 
     # --- Chat model (any LangChain-supported provider) ---
     # `llm_provider` is a name understood by langchain's init_chat_model
     # ("ollama", "openai", "anthropic", ...). The model name is provider-specific.
-    # To use vLLM later: provider "openai" + llm_base_url pointing at its /v1 endpoint.
+    # For a vLLM / OpenAI-compatible server: provider "openai" + llm_base_url.
     llm_provider: str = "ollama"
     llm_model: str = "nemotron-3.5-lightning"
     llm_base_url: str | None = None  # None = provider default (Ollama: localhost:11434)
     llm_temperature: float = 0.0  # tool calling is more reliable when deterministic
-    # Context window cap in tokens. Ollama-specific: lowering it shrinks the KV cache
-    # and so memory use. Leave unset for other providers.
+    # Context window cap in tokens (Ollama only). Leave unset for other providers.
     llm_num_ctx: int | None = None
 
-    # --- Embeddings for the document store (also provider-agnostic) ---
+    # --- Embeddings for the knowledge store (also provider-agnostic) ---
     embedding_provider: str = "ollama"  # "ollama" | "huggingface"
     embedding_model: str = "nomic-embed-text"
     embedding_base_url: str | None = None
+    # Width of the pgvector column. It is fixed per deployment: changing the
+    # embedding model to one with a different width needs a re-embed migration.
+    embedding_dim: int = 768
 
-    # --- Document store (read-only knowledge base) ---
-    docs_dir: Path = Path("docs_store/source")  # where the user's documents live
-    vector_dir: Path = Path("docs_store/chroma")  # persisted Chroma index
+    # Where uploaded documents are kept on disk (per-shop subfolders).
+    upload_dir: Path = Path("data/uploads")
 
-    @field_validator("timezone")
-    @classmethod
-    def _valid_timezone(cls, v: str) -> str:
-        # Fail at startup with a useful hint rather than deep inside a calendar call.
-        try:
-            ZoneInfo(v)
-        except (ZoneInfoNotFoundError, ValueError) as e:
-            raise ValueError(
-                f"'{v}' is not a valid IANA timezone. Use e.g. America/Los_Angeles "
-                "(there is no America/San_Francisco)."
-            ) from e
-        return v
-
-    @property
-    def tz(self) -> ZoneInfo:
-        return ZoneInfo(self.timezone)
+    # --- Outbound integrations ---
+    vin_decoder_url: str = "https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/{vin}?format=json"
+    http_timeout_s: float = 8.0
 
 
 @lru_cache

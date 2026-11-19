@@ -1,7 +1,7 @@
 [project]
 name = "shoppi"
 version = "0.1.0"
-description = "LLM calendar assistant: chat with an open-source model to manage calendar events."
+description = "Shop management for car and truck service shops: scheduling, intake, inventory and an assistant."
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "pydantic>=2.7",
@@ -9,29 +9,35 @@ dependencies = [
     "cryptography>=42",
     # IANA timezone database for zoneinfo (not present on every system)
     "tzdata",
-    # Google Calendar + OAuth (only imported by the Google provider modules)
-    "google-api-python-client>=2.130",
-    "google-auth>=2.30",
-    "google-auth-oauthlib>=1.2",
-    # LLM agent (provider-agnostic) and the local knowledge base
+    # Database: Postgres with row-level security and pgvector
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+    "alembic>=1.13",
+    "pgvector>=0.3",
+    # LLM agent (provider-agnostic) and the knowledge base
     "langchain>=1.4",
     "langgraph>=1.2",
+    "langgraph-checkpoint-postgres>=2",
     "langchain-ollama>=1.1",
-    "langchain-chroma>=1.1",
     "langchain-text-splitters>=1.1",
-    # Internal calendar storage
-    "sqlalchemy>=2.0",
+    "pypdf>=4",
     # Web app
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27",
+    # Google sign-in and the optional Google Calendar mirror (imported only when used)
+    "google-api-python-client>=2.130",
+    "google-auth>=2.30",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "httpx>=0.27"]
+dev = ["pytest>=8"]
 
 [tool.setuptools.package-data]
-# Ship the web UI's static files with the package.
-"shoppi.web" = ["static/*"]
+# Ship the built web UI (cd web && npm run build) and the migrations with the package.
+"shoppi.web" = ["dist/*", "dist/assets/*"]
+"shoppi.db" = ["migrations/*", "migrations/versions/*"]
 
 [build-system]
 requires = ["setuptools>=68"]

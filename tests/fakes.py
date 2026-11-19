@@ -1,17 +1,15 @@
-"""Test doubles: a scripted chat model, an in-memory calendar, a canned doc store."""
+"""Test doubles: a scripted chat model and deterministic embeddings (no Ollama needed)."""
 
 from __future__ import annotations
 
-from datetime import datetime
-from itertools import count
+import hashlib
+import math
+import re
 
+from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
-
-from shoppi.calendar.base import CalendarProvider
-from shoppi.calendar.models import Event, EventCreate, EventUpdate
-from shoppi.knowledge.base import DocumentStore, SearchHit
 
 
 class ScriptedChatModel(BaseChatModel):
@@ -30,39 +28,31 @@ class ScriptedChatModel(BaseChatModel):
     def bind_tools(self, tools, **kwargs):
         return self  # tool schemas are irrelevant to a scripted model
 
+    def with_structured_output(self, schema, **kwargs):
+        raise NotImplementedError("scripted model has no structured output")
+
     def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
         self.seen.append(list(messages))
         return ChatResult(generations=[ChatGeneration(message=self.script.pop(0))])
 
 
-class InMemoryCalendar(CalendarProvider):
-    def __init__(self, events: list[Event] | None = None):
-        self.events = {e.id: e for e in events or []}
-        self._ids = count(1)
+class WordHashEmbeddings(Embeddings):
+    """Bag-of-words vectors: texts sharing words are close. Deterministic and offline."""
 
-    def list_events(self, start: datetime, end: datetime, query: str | None = None) -> list[Event]:
-        hits = [e for e in self.events.values() if e.start < end and e.end > start]
-        if query:
-            hits = [e for e in hits if query.lower() in e.title.lower()]
-        return sorted(hits, key=lambda e: e.start)
+    def __init__(self, dim: int = 768):
+        self.dim = dim
 
-    def get_event(self, event_id: str) -> Event:
-        return self.events[event_id]
+    def _embed(self, text: str) -> list[float]:
+        vec = [0.0] * self.dim
+        for word in re.findall(r"[a-z0-9]+", text.lower()):
+            if len(word) < 3:
+                continue
+            vec[int(hashlib.md5(word.encode()).hexdigest(), 16) % self.dim] += 1.0
+        norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+        return [v / norm for v in vec]
 
-    def create_event(self, event: EventCreate) -> Event:
-        ev = Event(id=f"ev{next(self._ids)}", **event.model_dump())
-        self.events[ev.id] = ev
-        return ev
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._embed(t) for t in texts]
 
-    def update_event(self, event_id: str, changes: EventUpdate) -> Event:
-        ev = self.events[event_id].model_copy(update=changes.model_dump(exclude_none=True))
-        self.events[event_id] = ev
-        return ev
-
-    def delete_event(self, event_id: str) -> None:
-        del self.events[event_id]
-
-
-class CannedDocs(DocumentStore):
-    def search(self, query: str, k: int = 4) -> list[SearchHit]:
-        return [SearchHit(text="Team standup is always 9:30am.", source="team.md")]
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed(text)

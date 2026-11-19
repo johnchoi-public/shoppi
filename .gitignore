@@ -9,3 +9,7 @@ docs_store/chroma/
 data/
 initial_mvp.md
 .venv/
+
+# Built web UI (cd web && npm run build) and its dependencies
+src/shoppi/web/dist/
+web/node_modules/
