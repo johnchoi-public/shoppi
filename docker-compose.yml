@@ -1,0 +1,21 @@
+# Optional: Postgres with pgvector in Docker, instead of a local install.
+#   docker compose up -d db
+#   PGHOST=localhost PGUSER=postgres PGPASSWORD=postgres ./scripts/setup_db.sh
+#   python scripts/migrate.py
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_PASSWORD: postgres   # local development only
+    ports:
+      - "5432:5432"
+    volumes:
+      - shoppi_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  shoppi_pgdata:
