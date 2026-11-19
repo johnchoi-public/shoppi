@@ -23,6 +23,7 @@ from shoppi.core.commands import Conflict, Ctx, IdArg, Invalid, command, query
 from shoppi.core.timeutil import normalize_phone
 from shoppi.db.models import Call, Customer, IntakeLink, IntakeSubmission, Vehicle
 from shoppi.domain.customers import CustomerIn, VehicleFields, clean_vin, create_customer_row, create_vehicle_row, vehicle_title
+from shoppi.domain.team import ensure_diagnosis_service
 from shoppi.domain.work_orders import CustomLine, WorkOrderIn, create_work_order_row, work_order_summary
 
 # ---- Links ------------------------------------------------------------------------
@@ -164,6 +165,7 @@ class IntakeData(BaseModel):
     concern: str | None = None
     notes: str | None = None
     service_type_ids: list[UUID] = []
+    diagnosis: bool = Field(default=False, description="Add the shop's Diagnosis service (find the cause of the concern).")
     custom_lines: list[CustomLine] = []
     mileage_in: int | None = Field(default=None, ge=0)
     preferred_employee_id: UUID | None = None
@@ -188,15 +190,18 @@ def _materialize(ctx: Ctx, data: IntakeData) -> dict:
         vehicle = create_vehicle_row(ctx, customer.id, data.vehicle)
     else:
         raise Invalid("Choose an existing vehicle or enter a new one.")
-    if not data.service_type_ids and not data.custom_lines and not (data.concern or "").strip():
+    if not data.service_type_ids and not data.custom_lines and not data.diagnosis and not (data.concern or "").strip():
         raise Invalid("Describe the concern or choose at least one service.")
-    lines = list(data.custom_lines)
-    if not data.service_type_ids and not lines:
-        # Nothing chosen yet: a diagnosis line so the visit can be scheduled.
-        lines.append(CustomLine(description="Diagnose: " + (data.concern or "").strip()[:120]))
+    service_ids = list(dict.fromkeys(data.service_type_ids))
+    # Diagnosis when it was asked for, and also when nothing else was chosen, so the
+    # visit always has something with a duration that can be scheduled.
+    if data.diagnosis or (not service_ids and not data.custom_lines):
+        diagnosis_id = ensure_diagnosis_service(ctx).id
+        if diagnosis_id not in service_ids:
+            service_ids.insert(0, diagnosis_id)
     wo = create_work_order_row(ctx, WorkOrderIn(
         customer_id=customer.id, vehicle_id=vehicle.id, concern=data.concern, notes=data.notes,
-        service_type_ids=data.service_type_ids, custom_lines=lines, mileage_in=data.mileage_in,
+        service_type_ids=service_ids, custom_lines=data.custom_lines, mileage_in=data.mileage_in,
         preferred_employee_id=data.preferred_employee_id))
     return {"customer_id": str(customer.id), "vehicle_id": str(vehicle.id), "work_order": work_order_summary(ctx, wo)}
 

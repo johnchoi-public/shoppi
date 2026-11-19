@@ -8,7 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 
-from shoppi.core.commands import Ctx, IdArg, Invalid, command, patch, query
+from shoppi.core.commands import Conflict, Ctx, IdArg, Invalid, command, patch, query
 from shoppi.core.timeutil import normalize_phone
 from shoppi.db.models import Call, Customer, Vehicle, WorkOrder
 
@@ -150,14 +150,70 @@ def customers_update(ctx: Ctx, args: CustomerPatch) -> dict:
     return ctx.out(row)
 
 
+def _delete_scope(ctx: Ctx, customer: Customer) -> dict:
+    """Everything that goes when this customer is deleted, and anything that stops it."""
+    from shoppi.db.models import JobAssignment
+
+    vehicles = ctx.tx.scalars(select(Vehicle).where(Vehicle.customer_id == customer.id)).all()
+    orders = ctx.tx.scalars(select(WorkOrder).where(WorkOrder.customer_id == customer.id).order_by(WorkOrder.number)).all()
+    calls = ctx.tx.scalars(select(Call).where(Call.customer_id == customer.id)).all()
+    busy = set(ctx.tx.scalars(select(JobAssignment.work_order_id).where(
+        JobAssignment.work_order_id.in_([w.id for w in orders]), JobAssignment.status.in_(("in_progress", "paused"))))) if orders else set()
+    blockers = [f"Work is under way on work order #{w.number}. Finish the job or cancel the work order first." for w in orders if w.id in busy]
+    return {"vehicles": vehicles, "orders": orders, "calls": calls, "blockers": blockers}
+
+
+@query("customers.delete_preview", vertical="customers", agent=False)
+def customers_delete_preview(ctx: Ctx, args: IdArg) -> dict:
+    """What deleting this customer would remove."""
+    c = ctx.get(Customer, args.id, "Customer")
+    scope = _delete_scope(ctx, c)
+    return {
+        "name": c.name,
+        "vehicles": [vehicle_title(v) for v in scope["vehicles"]],
+        "work_orders": [{"number": w.number, "status": w.status} for w in scope["orders"]],
+        "open_work_orders": sum(1 for w in scope["orders"] if w.status not in ("completed", "cancelled")),
+        "calls": len(scope["calls"]),
+        "blockers": scope["blockers"],
+    }
+
+
 @command("customers.delete", vertical="customers", managers_only=True, agent=False,
-         description="Delete a customer who has no work orders.")
+         description="Permanently delete a customer with their vehicles, work orders and phone calls. Owners and advisors only.")
 def customers_delete(ctx: Ctx, args: IdArg) -> dict:
+    from shoppi.db.models import Document, IntakeSubmission
+    from shoppi.domain.work_orders import delete_work_order_row
+
     row = ctx.get(Customer, args.id, "Customer")
-    if ctx.tx.scalar(select(func.count()).select_from(WorkOrder).where(WorkOrder.customer_id == row.id)):
-        raise Invalid("This customer has work orders and can't be deleted.")
-    ctx.tx.delete(row)
-    return {"ok": True}
+    name = row.name
+    scope = _delete_scope(ctx, row)
+    if scope["blockers"]:
+        raise Conflict(" ".join(scope["blockers"]))
+    vehicle_ids = [v.id for v in scope["vehicles"]]
+
+    for wo in scope["orders"]:
+        delete_work_order_row(ctx, wo)
+    # Intake submissions are kept as a record of what came in, but no longer point here.
+    for sub in ctx.tx.scalars(select(IntakeSubmission).where(
+            or_(IntakeSubmission.customer_id == row.id, IntakeSubmission.vehicle_id.in_(vehicle_ids)))):
+        sub.customer_id, sub.vehicle_id = None, None
+    # Phone calls are this person's own words: they go with the customer (transcripts cascade).
+    for call in scope["calls"]:
+        for sub in ctx.tx.scalars(select(IntakeSubmission).where(IntakeSubmission.call_id == call.id)):
+            sub.call_id = None
+        ctx.tx.flush()
+        ctx.tx.delete(call)
+    # Uploaded documents that were merely filed under the customer are kept, unfiled.
+    for doc in ctx.tx.scalars(select(Document).where(
+            Document.kind != "call_transcript", or_(Document.customer_id == row.id, Document.vehicle_id.in_(vehicle_ids)))):
+        doc.customer_id, doc.vehicle_id = None, None
+    ctx.tx.flush()
+    ctx.tx.delete(row)  # vehicles go with the customer (ON DELETE CASCADE)
+    ctx.tx.flush()
+    from shoppi.domain.schedule import _notify_calendar_changed
+
+    _notify_calendar_changed(ctx)
+    return {"deleted": True, "name": name, "vehicles": len(vehicle_ids), "work_orders": len(scope["orders"]), "calls": len(scope["calls"])}
 
 
 @query("vehicles.get", vertical="customers", description="One vehicle with its service history.")

@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { get, post } from "../api";
+import { get, post, startSession } from "../api";
 import { Button, Checkbox, Field, Input, Loading, Notice, useForm } from "../ui";
 
 function AuthLayout({ title, subtitle, children }: { title: string; subtitle?: ReactNode; children: ReactNode }) {
@@ -32,7 +32,10 @@ function useSubmit(action: () => Promise<any>, after: string = "/") {
     setBusy(true);
     setError("");
     try {
-      await action();
+      const res = await action();
+      // Confirms the browser is really signed in (and falls back if it dropped the cookie),
+      // so a sign-in can never "succeed" and leave the form sitting there.
+      await startSession(res?.token);
       await qc.invalidateQueries({ queryKey: ["me"] });
       nav(after);
     } catch (err: any) {
@@ -105,7 +108,7 @@ export function Invite() {
   const { token = "" } = useParams();
   const info = useQuery({ queryKey: ["invite", token], queryFn: () => get(`/api/auth/invite/${token}`), retry: false });
   const [f, set] = useForm({ name: "", password: "" });
-  const { submit, error, busy } = useSubmit(async () => { await post(`/api/auth/invite/${token}`, f); location.assign("/"); });
+  const { submit, error, busy } = useSubmit(() => post(`/api/auth/invite/${token}`, f));
   if (info.isLoading) return <Loading />;
   if (info.isError) {
     return <AuthLayout title="Invite not found"><Notice tone="red">{(info.error as any)?.message}</Notice><p className="mt-4 text-sm"><Link className="link" to="/login">Go to sign in</Link></p></AuthLayout>;

@@ -250,6 +250,8 @@ class ServiceType(TenantMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     price: Mapped[Decimal | None] = mapped_column(Money)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # The service offered as "Diagnosis" during customer intake (at most one per shop).
+    is_diagnosis: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class ServiceStep(TenantMixin, Base):

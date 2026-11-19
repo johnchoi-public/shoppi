@@ -11,8 +11,8 @@ from sqlalchemy import func, or_, select
 from shoppi.core.commands import Conflict, Ctx, IdArg, Invalid, command, patch, query
 from shoppi.core.timeutil import to_local
 from shoppi.db.models import (
-    Bay, Customer, Employee, JobAssignment, Part, PartReservation, ServiceType, StockMovement, Vehicle, WorkOrder,
-    WorkOrderLine,
+    Bay, Customer, Document, Employee, IntakeSubmission, JobAssignment, Part, PartReservation, ServiceType,
+    StockMovement, Vehicle, WorkOrder, WorkOrderLine,
 )
 from shoppi.domain.customers import vehicle_title
 from shoppi.scheduling.service import ACTIVE, parts_status
@@ -244,3 +244,40 @@ def work_orders_set_status(ctx: Ctx, args: StatusIn) -> dict:
     wo.status = args.status
     ctx.tx.flush()
     return work_order_summary(ctx, wo)
+
+
+def delete_work_order_row(ctx: Ctx, wo: WorkOrder) -> None:
+    """Permanently remove a work order with its lines, scheduled jobs and part
+    reservations. Each removed row is written to the history by the audit trigger.
+
+    Kept, but unlinked: stock movements (parts already used stay deducted, so the
+    stock ledger still adds up), attached documents, and the intake submission it
+    came from."""
+    busy = ctx.tx.scalar(select(func.count()).select_from(JobAssignment).where(
+        JobAssignment.work_order_id == wo.id, JobAssignment.status.in_(("in_progress", "paused"))))
+    if busy:
+        raise Conflict(f"Work is under way on work order #{wo.number}. Finish the job or cancel the work order first.")
+    for move in ctx.tx.scalars(select(StockMovement).where(StockMovement.work_order_id == wo.id)):
+        move.work_order_id = None
+        move.note = " ".join(x for x in (move.note, f"(work order #{wo.number}, deleted)") if x)
+    for doc in ctx.tx.scalars(select(Document).where(Document.work_order_id == wo.id)):
+        doc.work_order_id = None
+    for sub in ctx.tx.scalars(select(IntakeSubmission).where(IntakeSubmission.work_order_id == wo.id)):
+        sub.work_order_id = None
+    ctx.tx.flush()
+    # Lines, jobs, bay holds and reservations go with it (ON DELETE CASCADE), which
+    # frees the mechanics, bays and reserved parts.
+    ctx.tx.delete(wo)
+    ctx.tx.flush()
+
+
+@command("work_orders.delete", vertical="work_orders", managers_only=True, agent=False,
+         description="Permanently delete a work order, its schedule and its part reservations. Owners and advisors only.")
+def work_orders_delete(ctx: Ctx, args: IdArg) -> dict:
+    wo = ctx.get(WorkOrder, args.id, "Work order")
+    number = wo.number
+    delete_work_order_row(ctx, wo)
+    from shoppi.domain.schedule import _notify_calendar_changed
+
+    _notify_calendar_changed(ctx)
+    return {"deleted": True, "number": number}

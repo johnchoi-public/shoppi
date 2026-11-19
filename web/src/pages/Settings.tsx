@@ -115,7 +115,7 @@ function Services() {
         <Table head={["Service", "Time", "Price", "Needs", ""]} empty={!services.data?.length && <Empty title="No services yet" />}>
           {(services.data ?? []).map((s) => (
             <tr key={s.id} className={s.active ? "" : "opacity-50"}>
-              <td className="td"><span className="font-medium text-slate-900">{s.name}</span>{s.steps.length > 1 && <div className="text-xs text-slate-500">{s.steps.map((x: any) => x.name).join(" → ")}</div>}</td>
+              <td className="td"><span className="font-medium text-slate-900">{s.name}</span>{s.is_diagnosis && <span className="ml-2"><Badge tone="teal">intake diagnosis</Badge></span>}{s.steps.length > 1 && <div className="text-xs text-slate-500">{s.steps.map((x: any) => x.name).join(" → ")}</div>}</td>
               <td className="td whitespace-nowrap">{fmtMinutes(s.minutes)}</td><td className="td">{fmtMoney(s.price)}</td>
               <td className="td">
                 <div className="flex flex-wrap gap-1">
@@ -141,7 +141,7 @@ function ServiceModal({ service, onClose }: { service?: any; onClose: () => void
   const certs = useQ<any[]>("cert_types.list");
   const bays = useQ<any>("bays.list");
   const parts = useQ<any[]>("parts.list");
-  const [f, set] = useForm({ name: service?.name ?? "", price: service?.price != null ? String(service.price) : "", description: service?.description ?? "" });
+  const [f, set] = useForm({ name: service?.name ?? "", price: service?.price != null ? String(service.price) : "", description: service?.description ?? "", is_diagnosis: !!service?.is_diagnosis });
   const [steps, setSteps] = useState<any[]>(service ? service.steps.map((s: any) => ({ ...s, minutes: String(s.minutes), bay_capability: s.bay_capability ?? "", requirements: s.requirements.map((r: any) => ({ ...r, applies_powertrain: r.applies_powertrain ?? "", applies_min_class: r.applies_min_class ? String(r.applies_min_class) : "" })) })) : [{ ...newStep(), name: "" }]);
   const [needs, setNeeds] = useState<any[]>(service?.parts.map((p: any) => ({ part_id: p.part_id, qty: String(p.qty) })) ?? []);
   const patch = (i: number, change: any) => setSteps((all) => all.map((s, j) => (j === i ? { ...s, ...change } : s)));
@@ -150,6 +150,7 @@ function ServiceModal({ service, onClose }: { service?: any; onClose: () => void
   async function save() {
     const payload = {
       id: service?.id, name: f.name, description: f.description || null, price: f.price ? Number(f.price) : null, active: service?.active ?? true,
+      is_diagnosis: f.is_diagnosis,
       steps: steps.map((s) => ({
         name: s.name || f.name, minutes: Number(s.minutes || 60), hands_on: s.hands_on, needs_bay: s.needs_bay, bay_capability: s.bay_capability || null,
         holds_bay: s.holds_bay, same_mechanic_as_prev: s.same_mechanic_as_prev,
@@ -165,6 +166,7 @@ function ServiceModal({ service, onClose }: { service?: any; onClose: () => void
       <div className="mb-4 grid grid-cols-3 gap-3">
         <Field label="Name" className="col-span-2"><Input autoFocus value={f.name} onChange={set("name")} /></Field>
         <Field label="Price"><Input inputMode="decimal" value={f.price} onChange={set("price")} /></Field>
+        <div className="col-span-3"><Checkbox label="Offer this as the “Diagnosis” option in customer intake (one service per shop)" checked={f.is_diagnosis} onChange={set("is_diagnosis")} /></div>
       </div>
 
       {steps.map((s, i) => (

@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useCan, useQ, useRun } from "../store";
 import { fmtDateTime, GVWR_CLASSES } from "../lib";
 import { AccessBanner, EMPTY_VEHICLE, EntityHistory, VehicleFields, vehiclePayload } from "../parts/shared";
-import { Badge, Button, Card, Empty, Field, Input, Loading, Modal, PageHeader, StatusBadge, Table, Tabs, Textarea, useForm } from "../ui";
+import { Badge, Button, Card, Empty, Field, Input, Loading, Modal, Notice, PageHeader, StatusBadge, Table, Tabs, Textarea, useForm } from "../ui";
 
 export function CustomersPage() {
   const nav = useNavigate();
@@ -79,6 +79,43 @@ export function VehicleModal({ customerId, vehicle, onClose }: { customerId: str
   );
 }
 
+/** Deleting a customer is permanent and takes their vehicles, work orders and calls with it, so the dialog spells out exactly what goes. */
+function DeleteCustomerModal({ customer, onClose, onDeleted }: { customer: any; onClose: () => void; onDeleted: () => void }) {
+  const run = useRun();
+  const preview = useQ<any>("customers.delete_preview", { id: customer.id });
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const p = preview.data;
+  const blocked = (p?.blockers.length ?? 0) > 0;
+  const confirmed = typed.trim().toLowerCase() === customer.name.trim().toLowerCase();
+  return (
+    <Modal title={`Delete ${customer.name}?`} onClose={onClose}
+      footer={<><Button onClick={onClose}>Cancel</Button>
+        <Button variant="danger" busy={busy} disabled={!p || blocked || !confirmed} onClick={async () => {
+          setBusy(true);
+          // Leave the page first: once the customer is gone this screen has nothing to show.
+          const r = await run("customers.delete", { id: customer.id }, { ok: `${customer.name} was deleted.` });
+          setBusy(false);
+          if (r) onDeleted();
+        }}>Delete permanently</Button></>}>
+      {preview.isLoading ? <Loading /> : !p ? <Notice tone="red">{(preview.error as any)?.message ?? "Couldn't load the details."}</Notice> : (
+        <div className="space-y-3 text-sm">
+          <p>This permanently deletes the customer and everything below. It can't be undone.</p>
+          <ul className="list-disc space-y-1 pl-5 text-slate-700">
+            <li>{p.vehicles.length ? <><b>{p.vehicles.length} vehicle{p.vehicles.length > 1 ? "s" : ""}</b>: {p.vehicles.join(", ")}</> : "No vehicles"}</li>
+            <li>{p.work_orders.length ? <><b>{p.work_orders.length} work order{p.work_orders.length > 1 ? "s" : ""}</b> ({p.work_orders.map((w: any) => `#${w.number}`).join(", ")}){p.open_work_orders > 0 && <>, {p.open_work_orders} still open. Their scheduled jobs and reserved parts are released.</>}</> : "No work orders"}</li>
+            <li>{p.calls ? <><b>{p.calls} phone call{p.calls > 1 ? "s" : ""}</b> and transcript{p.calls > 1 ? "s" : ""}</> : "No phone calls"}</li>
+          </ul>
+          <p className="text-slate-500">Parts already used stay deducted from stock. The deletion is recorded in History with your name.</p>
+          {blocked ? <Notice tone="red">{p.blockers.join(" ")}</Notice> : (
+            <Field label={`Type the customer's name to confirm: ${customer.name}`}><Input autoFocus value={typed} onChange={(e) => setTyped(e.target.value)} /></Field>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 export function CustomerDetail() {
   const { id = "" } = useParams();
   const can = useCan();
@@ -88,6 +125,7 @@ export function CustomerDetail() {
   const [tab, setTab] = useState("overview");
   const [editing, setEditing] = useState(false);
   const [vehicle, setVehicle] = useState<any | "new" | null>(null);
+  const [deleting, setDeleting] = useState(false);
   if (c.isLoading) return <Loading />;
   if (c.isError) return <Empty title="Customer not found" action={<Link className="link" to="/customers">Back to customers</Link>} />;
   const d = c.data;
@@ -95,7 +133,11 @@ export function CustomerDetail() {
   return (
     <div>
       <PageHeader title={d.name} subtitle={[d.phone, d.email].filter(Boolean).join(" · ") || "No contact details"}
-        actions={<><Button onClick={() => setEditing(true)}>Edit</Button>{can.view("intake") && <Button variant="primary" onClick={() => nav("/intake/new")}>New intake</Button>}</>} />
+        actions={<>
+          {can.manager && <Button variant="danger" onClick={() => setDeleting(true)}>Delete</Button>}
+          <Button onClick={() => setEditing(true)}>Edit</Button>
+          {can.view("intake") && <Button variant="primary" onClick={() => nav("/intake/new")}>New intake</Button>}
+        </>} />
       <AccessBanner vertical="customers" />
       <Tabs tabs={tabs} value={tab} onChange={setTab} />
 
@@ -146,6 +188,7 @@ export function CustomerDetail() {
       {tab === "history" && <Card pad={false}><EntityHistory type="customers" id={id} /></Card>}
 
       {editing && <CustomerModal customer={d} onClose={() => setEditing(false)} />}
+      {deleting && <DeleteCustomerModal customer={d} onClose={() => setDeleting(false)} onDeleted={() => nav("/customers")} />}
       {vehicle && <VehicleModal customerId={id} vehicle={vehicle === "new" ? undefined : vehicle} onClose={() => setVehicle(null)} />}
     </div>
   );

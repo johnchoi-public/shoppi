@@ -52,6 +52,8 @@ export function WorkOrderDetail() {
   const [scheduling, setScheduling] = useState(false);
   const [addLine, setAddLine] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const nav = useNavigate();
   if (wo.isLoading) return <Loading />;
   if (wo.isError) return <Empty title="Work order not found" action={<Link className="link" to="/work-orders">Back to work orders</Link>} />;
   const d = wo.data;
@@ -72,6 +74,7 @@ export function WorkOrderDetail() {
           {open && <Button onClick={() => run("work_orders.set_status", { id, status: "completed" }, { ok: "Work order completed." })}>Mark completed</Button>}
           {open && <Button variant="danger" onClick={() => confirm("Cancel this work order? Its schedule and reserved parts are released.") && run("work_orders.set_status", { id, status: "cancelled" }, { ok: "Work order cancelled." })}>Cancel</Button>}
           {!open && <Button onClick={() => run("work_orders.set_status", { id, status: "draft" }, { ok: "Reopened as a draft." })}>Reopen</Button>}
+          {can.manager && <Button variant="danger" onClick={() => setDeleting(true)}>Delete</Button>}
         </>} />
       <AccessBanner vertical="work_orders" />
 
@@ -152,7 +155,40 @@ export function WorkOrderDetail() {
       {scheduling && <Modal wide title={`Schedule work order #${d.number}`} onClose={() => setScheduling(false)}><SlotPicker workOrderId={id} onBooked={() => setScheduling(false)} /></Modal>}
       {addLine && <AddLineModal workOrderId={id} services={services.data ?? []} onClose={() => setAddLine(false)} />}
       {editing && <EditModal wo={d} onClose={() => setEditing(false)} />}
+      {deleting && <DeleteWorkOrderModal wo={d} onClose={() => setDeleting(false)} onDeleted={() => nav("/work-orders")} />}
     </div>
+  );
+}
+
+function DeleteWorkOrderModal({ wo, onClose, onDeleted }: { wo: any; onClose: () => void; onDeleted: () => void }) {
+  const run = useRun();
+  const [busy, setBusy] = useState(false);
+  const jobs = (wo.jobs as any[]).filter((j) => !j.is_hold);
+  const underWay = jobs.some((j) => ["in_progress", "paused"].includes(j.status));
+  const scheduled = jobs.filter((j) => ["planned", "needs_reassignment"].includes(j.status)).length;
+  const reserved = (wo.parts?.lines ?? []).filter((p: any) => p.reserved > 0).length;
+  return (
+    <Modal title={`Delete work order #${wo.number}?`} onClose={onClose}
+      footer={<><Button onClick={onClose}>Cancel</Button>
+        <Button variant="danger" busy={busy} disabled={underWay} onClick={async () => {
+          setBusy(true);
+          const r = await run("work_orders.delete", { id: wo.id }, { ok: `Work order #${wo.number} was deleted.` });
+          setBusy(false);
+          if (r) onDeleted();
+        }}>Delete permanently</Button></>}>
+      <div className="space-y-3 text-sm">
+        <p>This permanently deletes work order #{wo.number} for <b>{wo.customer_name}</b> ({wo.vehicle_title}). It can't be undone.</p>
+        <ul className="list-disc space-y-1 pl-5 text-slate-700">
+          <li>{wo.lines.length} service line{wo.lines.length === 1 ? "" : "s"}</li>
+          <li>{scheduled ? `${scheduled} scheduled job${scheduled > 1 ? "s come" : " comes"} off the calendar, freeing the mechanic and bay` : "Nothing on the calendar to remove"}</li>
+          <li>{reserved ? "Reserved parts go back to available stock" : "No reserved parts"}</li>
+        </ul>
+        <p className="text-slate-500">Parts already used stay deducted from stock. The customer and vehicle are kept. The deletion is recorded in History with your name.</p>
+        {underWay
+          ? <Notice tone="red">Work is under way on this work order. Finish the job or cancel the work order first.</Notice>
+          : wo.status !== "cancelled" && wo.status !== "completed" && <Notice>If you only want to stop the work, use Cancel instead: a cancelled work order stays on record.</Notice>}
+      </div>
+    </Modal>
   );
 }
 

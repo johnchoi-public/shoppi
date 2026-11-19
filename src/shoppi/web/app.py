@@ -13,7 +13,11 @@ Time convention: the API speaks shop-local times with no UTC offset
 (e.g. 2026-11-06T15:00:00); the server attaches the shop's zone.
 
 Security notes:
-- sessions are opaque random tokens in an HttpOnly, SameSite=Lax cookie;
+- sessions are opaque random tokens in an HttpOnly, SameSite=Lax cookie. Sign-in
+  also returns the token, and it is accepted as "Authorization: Bearer <token>":
+  the web UI falls back to that only when the browser refuses to keep the cookie
+  (cookies blocked, or the app embedded in another page), where sign-in would
+  otherwise succeed on the server and then silently fail in the browser;
 - every state-changing request must carry the X-Requested-With header, which a
   cross-site form post cannot set;
 - the public intake and webhook endpoints are the only unauthenticated writers
@@ -156,12 +160,15 @@ def create_app(agent=None) -> FastAPI:
                 return JSONResponse(status_code=403, content={"error": {"code": "csrf", "message": "Missing X-Requested-With header."}})
         return await call_next(request)
 
-    def set_session(response: Response, token: str) -> None:
+    def set_session(response: Response, token: str) -> dict:
+        """Start a browser session: set the cookie and also hand the token back, for
+        browsers that will not keep the cookie (see the module docstring)."""
         response.set_cookie(COOKIE, token, max_age=settings.session_days * 86400, httponly=True, samesite="lax",
                             secure=settings.cookie_secure, path="/")
+        return {"ok": True, "token": token}
 
     def current_actor(request: Request) -> Actor:
-        return auth.resolve_session(request.cookies.get(COOKIE))
+        return auth.resolve_session(_session_token(request))
 
     # -- Auth --
 
@@ -186,20 +193,18 @@ def create_app(agent=None) -> FastAPI:
             from shoppi.starter import install_starter
 
             install_starter(auth.resolve_session(token))
-        set_session(response, token)
-        return {"ok": True}
+        return set_session(response, token)
 
     @app.post("/api/auth/login")
     def login(body: LoginIn, request: Request, response: Response) -> dict:
         limiter.check(f"login:{_client(request)}:{body.email.lower()}", 10, 300)
         token, _ = auth.login(body.email, body.password)
-        set_session(response, token)
-        return {"ok": True}
+        return set_session(response, token)
 
     @app.post("/api/auth/logout")
     def logout(request: Request, response: Response) -> dict:
-        token = request.cookies.get(COOKIE)
-        if token:
+        # End whichever credentials this browser holds (it may have both).
+        for token in {_session_token(request), request.cookies.get(COOKIE)} - {None}:
             auth.end_session(token)
         response.delete_cookie(COOKIE, path="/")
         return {"ok": True}
@@ -220,8 +225,7 @@ def create_app(agent=None) -> FastAPI:
     @app.post("/api/auth/switch")
     def switch(body: SwitchIn, response: Response, actor: Actor = Depends(current_actor)) -> dict:
         token, _ = auth.start_session_for(actor.user_id, body.shop_id)
-        set_session(response, token)
-        return {"ok": True}
+        return set_session(response, token)
 
     @app.get("/api/auth/invite/{token}")
     def invite_info(token: str) -> dict:
@@ -236,8 +240,7 @@ def create_app(agent=None) -> FastAPI:
     def invite_accept(token: str, body: InviteAccept, request: Request, response: Response) -> dict:
         limiter.check(f"invite:{_client(request)}", 20, 600)
         session, _ = auth.accept_invite(token, body.name, body.password)
-        set_session(response, session)
-        return {"ok": True}
+        return set_session(response, session)
 
     @app.get("/api/auth/google/start")
     def google_start(request: Request):
@@ -571,6 +574,14 @@ def create_app(agent=None) -> FastAPI:
 
 
 # ---- Helpers ----------------------------------------------------------------------
+
+
+def _session_token(request: Request) -> str | None:
+    """The session token: the Authorization header if the UI sent one, else the cookie."""
+    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() == "bearer" and value.strip():
+        return value.strip()
+    return request.cookies.get(COOKIE)
 
 
 async def _json(request: Request, limit: int = 4 * 1024 * 1024) -> dict:

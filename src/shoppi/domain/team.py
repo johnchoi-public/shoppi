@@ -356,8 +356,24 @@ class ServiceIn(BaseModel):
     description: str | None = None
     price: float | None = Field(default=None, ge=0)
     active: bool = True
+    # True = offer this service as "Diagnosis" during intake (replaces any other); omit to leave unchanged.
+    is_diagnosis: bool | None = None
     steps: list[StepIn] = Field(min_length=1)
     parts: list[ServicePartIn] = []
+
+
+def ensure_diagnosis_service(ctx: Ctx) -> ServiceType:
+    """The shop's Diagnosis service, created with sensible defaults the first time it
+    is needed. It is an ordinary catalog service: owners can change its time, price
+    and requirements under Settings -> Services."""
+    svc = ctx.tx.scalar(select(ServiceType).where(ServiceType.is_diagnosis).order_by(ServiceType.active.desc(), ServiceType.created_at))
+    if svc is None:
+        svc = ServiceType(name="Diagnosis", description="Find the cause of the customer's concern before quoting a repair.", is_diagnosis=True)
+        ctx.tx.add(svc)
+        ctx.tx.flush()
+        ctx.tx.add(ServiceStep(service_type_id=svc.id, seq=1, name="Diagnosis", minutes=60))
+        ctx.tx.flush()
+    return svc
 
 
 def service_out(ctx: Ctx, s: ServiceType) -> dict:
@@ -391,6 +407,12 @@ def services_save(ctx: Ctx, args: ServiceIn) -> dict:
         svc = ServiceType(name=args.name, description=args.description, price=args.price, active=args.active)
         ctx.tx.add(svc)
     ctx.tx.flush()
+    if args.is_diagnosis is not None:
+        if args.is_diagnosis:  # only one service per shop is the Diagnosis option
+            for other in ctx.tx.scalars(select(ServiceType).where(ServiceType.is_diagnosis, ServiceType.id != svc.id)):
+                other.is_diagnosis = False
+        svc.is_diagnosis = args.is_diagnosis
+        ctx.tx.flush()
 
     existing = ctx.tx.scalars(select(ServiceStep).where(ServiceStep.service_type_id == svc.id).order_by(ServiceStep.seq)).all()
     # Steps already referenced by scheduled jobs are updated in place, by position, never deleted.
@@ -423,6 +445,12 @@ def services_save(ctx: Ctx, args: ServiceIn) -> dict:
         ctx.tx.add(ServicePart(service_type_id=svc.id, part_id=p.part_id, qty=p.qty))
     ctx.tx.flush()
     return service_out(ctx, svc)
+
+
+@command("services.ensure_diagnosis", vertical="services", agent=False,
+         description="Make sure the shop has a Diagnosis service to offer during intake.")
+def services_ensure_diagnosis(ctx: Ctx) -> dict:
+    return service_out(ctx, ensure_diagnosis_service(ctx))
 
 
 class ArchiveArg(BaseModel):

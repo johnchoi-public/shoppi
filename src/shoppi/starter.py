@@ -67,4 +67,6 @@ def install_starter(actor: Actor) -> dict:
     ]
     for svc in catalog:
         services[svc["name"]] = _ok(execute(actor, "services.save", svc))["id"]
+    # The general "Diagnosis" option offered in the intake wizard.
+    services["Diagnosis"] = _ok(execute(actor, "services.ensure_diagnosis"))["id"]
     return {"bays": bays, "services": services, "certs": certs}

@@ -574,3 +574,192 @@ def test_conversation_threads_are_keyed_per_shop_and_user(shop, other_shop):
 
     assert thread_key(shop.owner, "t1") != thread_key(other_shop.owner, "t1")
     assert thread_key(shop.owner, "t1") != thread_key(shop.member("mechanic"), "t1")
+
+
+# ---- Diagnosis as an intake option ------------------------------------------------
+
+NEW = {"customer": {"name": "Dee Agnosis", "phone": "555-700-1000"}, "vehicle": {"year": 2019, "make": "Honda", "model": "CR-V"}}
+
+
+def line_names(shop, result):
+    return [line["description"] for line in shop.q("work_orders.get", {"id": result["work_order"]["id"]})["lines"]]
+
+
+def test_diagnosis_can_be_chosen_as_a_service_in_intake(shop):
+    diagnosis = next(s for s in shop.q("services.list") if s["is_diagnosis"])
+    assert diagnosis["name"] == "Diagnosis" and diagnosis["minutes"] == 60 and diagnosis["active"]
+
+    alone = shop.run("intake.staff_create", {**NEW, "concern": "Rattle over bumps", "diagnosis": True})
+    assert line_names(shop, alone) == ["Diagnosis"]
+    both = shop.run("intake.staff_create", {"customer_id": alone["customer_id"], "vehicle_id": alone["vehicle_id"], "concern": "Also due for oil",
+                                            "diagnosis": True, "service_type_ids": [shop.ids["services"]["Oil & filter change"]]})
+    assert line_names(shop, both) == ["Diagnosis", "Oil & filter change"]
+    # Ticking it and also passing its id doesn't add it twice.
+    twice = shop.run("intake.staff_create", {"customer_id": alone["customer_id"], "vehicle_id": alone["vehicle_id"], "concern": "x",
+                                             "diagnosis": True, "service_type_ids": [diagnosis["id"]]})
+    assert line_names(shop, twice) == ["Diagnosis"]
+    # Not asked for and something else chosen: no diagnosis.
+    plain = shop.run("intake.staff_create", {"customer_id": alone["customer_id"], "vehicle_id": alone["vehicle_id"], "concern": "Oil",
+                                             "service_type_ids": [shop.ids["services"]["Oil & filter change"]]})
+    assert line_names(shop, plain) == ["Oil & filter change"]
+
+
+def test_intake_with_only_a_concern_gets_a_schedulable_diagnosis(shop):
+    gus = shop.employee("Gus General", [])
+    shop.shifts(gus, MON)
+    result = shop.run("intake.staff_create", {**NEW, "concern": "Won't start when cold"})
+    assert line_names(shop, result) == ["Diagnosis"]
+    found = shop.q("schedule.find_slots", {"work_order_id": result["work_order"]["id"], "earliest": iso(MON), "days": 3})
+    assert found["steps"][0]["minutes"] == 60 and found["candidates"]
+
+
+def test_diagnosis_also_works_when_accepting_a_customer_submission(shop):
+    link = shop.run("intake_links.create", {"kind": "kiosk"})
+    execute(public_actor(shop, link["url"]), "intake.submit", FORM)
+    accepted = shop.run("intake.accept", {"id": shop.q("intake.list")[0]["id"], "customer": FORM["customer"],
+                                          "vehicle": {"year": 2023, "make": "Ford", "model": "Bronco Sport"}, "concern": FORM["concern"], "diagnosis": True})
+    assert line_names(shop, accepted) == ["Diagnosis"]
+
+
+def test_shop_without_a_diagnosis_service_gets_one_on_first_use_and_can_change_it():
+    from tests.conftest import ShopFixture
+
+    bare = ShopFixture(starter=False)  # e.g. a shop created before this feature existed
+    assert bare.q("services.list") == []
+    result = bare.run("intake.staff_create", {**NEW, "concern": "Noise", "diagnosis": True})
+    assert line_names(bare, result) == ["Diagnosis"]
+    bare.run("intake.staff_create", {"customer_id": result["customer_id"], "vehicle_id": result["vehicle_id"], "concern": "Again", "diagnosis": True})
+    services = bare.q("services.list")
+    assert len(services) == 1 and services[0]["is_diagnosis"]  # created once, reused
+
+    # The owner makes a different service the Diagnosis option: only one holds the flag.
+    custom = bare.run("services.save", {"name": "Full inspection & diagnosis", "price": 149, "is_diagnosis": True, "steps": [{"name": "Inspect", "minutes": 90}]})
+    flags = {s["name"]: s["is_diagnosis"] for s in bare.q("services.list")}
+    assert flags == {"Diagnosis": False, "Full inspection & diagnosis": True}
+    again = bare.run("intake.staff_create", {"customer_id": result["customer_id"], "vehicle_id": result["vehicle_id"], "concern": "Third", "diagnosis": True})
+    assert line_names(bare, again) == ["Full inspection & diagnosis"]
+    # Editing it later without mentioning the flag leaves the flag alone.
+    bare.run("services.save", {"id": custom["id"], "name": "Full inspection & diagnosis", "price": 159, "steps": [{"name": "Inspect", "minutes": 90}]})
+    assert next(s for s in bare.q("services.list") if s["id"] == custom["id"])["is_diagnosis"] is True
+
+
+# ---- Deleting work orders and customers -------------------------------------------
+
+
+def booked_oil_change(shop, mechanic):
+    """A booked oil change that reserves one filter. Returns (work order, part id)."""
+    filt = shop.run("parts.create", {"sku": f"OF-{len(shop.q('parts.list'))}", "name": "Oil filter", "on_hand": 3})
+    svc = next(s for s in shop.q("services.list") if s["name"] == "Oil & filter change")
+    shop.run("services.save", {"id": svc["id"], "name": svc["name"], "steps": [{"name": "Oil & filter change", "minutes": 30}],
+                               "parts": [{"part_id": filt["id"], "qty": 1}]})
+    wo = shop.work_order(["Oil & filter change"])
+    cand = shop.q("schedule.find_slots", {"work_order_id": wo["id"], "earliest": iso(MON), "days": 3})["candidates"][0]
+    shop.run("schedule.book", {"work_order_id": wo["id"], "steps": [{k: s[k] for k in ("line_id", "step_id", "employee_id", "bay_id", "start", "end")} for s in cand["steps"]]})
+    return wo, filt["id"], cand
+
+
+def test_owner_or_advisor_can_delete_a_work_order_and_it_frees_what_it_held(shop):
+    from shoppi.core.commands import NotFound
+
+    gus = shop.employee("Gus General", [])
+    shop.shifts(gus, MON)
+    wo, part_id, cand = booked_oil_change(shop, gus)
+    assert shop.q("parts.get", {"id": part_id})["reserved"] == 1
+    window = {"start": iso(MON), "end": iso(MON + timedelta(days=3)), "kinds": ["job"]}
+    assert len(shop.q("calendar.feed", window)) == 1
+
+    advisor = shop.member("advisor")
+    assert execute(advisor, "work_orders.delete", {"id": wo["id"]})["result"] == {"deleted": True, "number": wo["number"]}
+    with pytest.raises(NotFound):
+        run_query(shop.owner, "work_orders.get", {"id": wo["id"]})
+    assert shop.q("calendar.feed", window) == []  # the mechanic and bay are free again
+    assert shop.q("parts.get", {"id": part_id})["reserved"] == 0
+    again = shop.work_order(["Oil & filter change"])
+    slots = shop.q("schedule.find_slots", {"work_order_id": again["id"], "earliest": iso(MON), "days": 3, "limit": 20})["candidates"]
+    assert cand["start"] in {c["start"] for c in slots}
+
+    # The deletion is in the history, with who did it and what the record was.
+    rows = shop.q("history.list", {"entity_type": "work_orders", "entity_id": wo["id"]})
+    assert rows[0]["op"] == "delete" and rows[0]["actor_name"] == advisor.name and rows[0]["before"]["number"] == wo["number"]
+    assert shop.q("history.list", {"entity_type": "job_assignments"})[0]["op"] == "delete"
+
+
+def test_mechanics_cannot_delete_even_with_edit_access_or_through_a_request(shop):
+    mechanic = shop.member("mechanic")
+    wo = shop.work_order(["Oil & filter change"])
+    cid = shop.q("work_orders.get", {"id": wo["id"]})["customer_id"]
+    for vertical in ("work_orders", "customers"):
+        shop.run("access.grant", {"user_id": str(mechanic.user_id), "vertical": vertical})
+    for name, args in (("work_orders.delete", {"id": wo["id"]}), ("customers.delete", {"id": cid})):
+        with pytest.raises(Forbidden):
+            execute(mechanic, name, args)
+        with pytest.raises(Forbidden):  # nor by asking the assistant
+            execute(mechanic.as_agent(), name, args)
+    assert shop.q("change_requests.list") == []  # it did not become an approvable request either
+    from shoppi.agent.tools import build_tools
+
+    assert not {"work_orders_delete", "customers_delete"} & {t.name for t in build_tools()}
+
+
+def test_work_in_progress_blocks_deletion(shop):
+    gus = shop.employee("Gus General", [])
+    shop.shifts(gus, MON)
+    wo, _, _ = booked_oil_change(shop, gus)
+    detail = shop.q("work_orders.get", {"id": wo["id"]})
+    shop.run("jobs.progress", {"id": detail["jobs"][0]["id"], "action": "start"})
+    for name, target in (("work_orders.delete", wo["id"]), ("customers.delete", detail["customer_id"])):
+        with pytest.raises(Conflict, match="under way"):
+            execute(shop.owner, name, {"id": target})
+    assert shop.q("customers.delete_preview", {"id": detail["customer_id"]})["blockers"]
+    shop.run("jobs.progress", {"id": detail["jobs"][0]["id"], "action": "finish"})
+    assert shop.run("work_orders.delete", {"id": wo["id"]})["deleted"]
+
+
+def test_deleting_a_completed_work_order_keeps_the_stock_ledger(shop):
+    gus = shop.employee("Gus General", [])
+    shop.shifts(gus, MON)
+    wo, part_id, _ = booked_oil_change(shop, gus)
+    shop.run("work_orders.set_status", {"id": wo["id"], "status": "completed"})
+    shop.run("work_orders.delete", {"id": wo["id"]})
+    part = shop.q("parts.get", {"id": part_id})
+    assert part["on_hand"] == 2  # the filter really was used
+    use = next(m for m in part["movements"] if m["reason"] == "use")
+    assert use["delta"] == -1 and use["work_order_id"] is None and f"#{wo['number']}" in use["note"]
+
+
+def test_deleting_a_customer_removes_their_vehicles_work_orders_and_calls(shop, other_shop, fake_extractor):
+    from shoppi.core.commands import NotFound
+
+    gus = shop.employee("Gus General", [])
+    shop.shifts(gus, MON)
+    wo, part_id, _ = booked_oil_change(shop, gus)
+    detail = shop.q("work_orders.get", {"id": wo["id"]})
+    cid, vid = detail["customer_id"], detail["vehicle_id"]
+    shop.run("customers.update", {"id": cid, "phone": "555-201-7788"})
+    call = shop.run("communications.ingest_transcript", CALL)
+    doc = shop.run("documents.add", {"title": "Fleet agreement", "text": "Agreed fleet discount terms for this customer.", "customer_id": cid})
+    keep_c, keep_v = shop.customer_vehicle()
+    theirs, _ = other_shop.customer_vehicle()
+
+    preview = shop.q("customers.delete_preview", {"id": cid})
+    assert (len(preview["vehicles"]), len(preview["work_orders"]), preview["open_work_orders"], preview["calls"], preview["blockers"]) == (1, 1, 1, 1, [])
+
+    result = shop.run("customers.delete", {"id": cid})
+    assert (result["vehicles"], result["work_orders"], result["calls"]) == (1, 1, 1)
+    for name, target in (("customers.get", cid), ("vehicles.get", vid), ("work_orders.get", wo["id"]), ("calls.get", call["id"])):
+        with pytest.raises(NotFound):
+            run_query(shop.owner, name, {"id": target})
+    assert [c["id"] for c in shop.q("customers.list")] == [keep_c]
+    assert shop.q("parts.get", {"id": part_id})["reserved"] == 0
+    hits = shop.q("documents.search", {"query": "grinding noise brake"})
+    assert all(h["kind"] != "call_transcript" for h in hits)  # the call transcript is gone from search
+    assert [d["id"] for d in shop.q("documents.list")] == [doc["id"]]  # the filed document is kept, unfiled
+    pending = shop.q("intake.list")  # the draft from the call stays in the queue, no longer pointing anywhere
+    assert len(pending) == 1 and pending[0]["customer_id"] is None and pending[0]["call_id"] is None
+    assert other_shop.q("customers.get", {"id": theirs})["id"] == theirs
+    with pytest.raises(NotFound):  # and one shop can't delete another's customer
+        execute(shop.owner, "customers.delete", {"id": theirs})
+
+    history = shop.q("history.list", {"entity_type": "customers", "entity_id": cid})
+    assert history[0]["op"] == "delete" and history[0]["actor_name"] == "Olive Owner"
+    assert shop.q("history.list", {"entity_type": "vehicles", "entity_id": vid})[0]["op"] == "delete"

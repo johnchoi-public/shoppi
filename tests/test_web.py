@@ -251,3 +251,38 @@ def test_chat_reports_model_failure_without_leaking_details():
     error = next(e for e in events if e["type"] == "error")
     assert "couldn't answer" in error["message"] and "pop from empty list" not in error["message"]
     assert events[-1]["type"] == "done"
+
+
+def test_session_works_without_cookies_via_bearer_token():
+    """A browser that refuses the cookie can still sign in: the token from the
+    sign-in response is accepted in the Authorization header."""
+    c, email = signed_up()
+    token = c.post("/api/auth/login", json={"email": email, "password": "correct-horse-battery"}).json()["token"]
+
+    cookieless = TestClient(create_app(), headers=H)  # never stores or sends the cookie
+    assert cookieless.get("/api/auth/me").status_code == 401
+    bearer = {"Authorization": f"Bearer {token}"}
+    me = cookieless.get("/api/auth/me", headers=bearer)
+    assert me.status_code == 200 and me.json()["user"]["role"] == "owner"
+    assert cookieless.post("/api/cmd/customers.create", json={"name": "No Cookie"}, headers=bearer).json()["status"] == "applied"
+    assert cookieless.post("/api/q/customers.list", json={}, headers=bearer).json()["data"][0]["name"] == "No Cookie"
+    # The CSRF header is still required, and a made-up token is refused.
+    assert TestClient(create_app()).post("/api/cmd/customers.create", json={"name": "x"}, headers=bearer).status_code == 403
+    assert cookieless.get("/api/auth/me", headers={"Authorization": "Bearer not-a-real-token"}).status_code == 401
+    # Signing out ends that session on the server.
+    assert cookieless.post("/api/auth/logout", headers=bearer).status_code == 200
+    assert cookieless.get("/api/auth/me", headers=bearer).status_code == 401
+
+
+def test_every_sign_in_route_returns_the_session_token():
+    c = client()
+    email = f"owner-{uuid4().hex[:8]}@example.com"
+    signup = c.post("/api/auth/signup", json={"shop_name": "Tok", "name": "Olive Owner", "email": email, "password": "correct-horse-battery", "starter": False}).json()
+    login = c.post("/api/auth/login", json={"email": email, "password": "correct-horse-battery"}).json()
+    shop_id = c.get("/api/auth/me").json()["shop"]["id"]
+    switch = c.post("/api/auth/switch", json={"shop_id": shop_id}).json()
+    link = cmd(c, "members.invite", {"email": f"m-{uuid4().hex[:6]}@example.com", "role": "mechanic"})["result"]["link"]
+    invite = client().post(f"/api/auth/invite/{link.rsplit('/', 1)[1]}", json={"name": "Max", "password": "wrench-and-socket"}).json()
+    for body in (signup, login, switch, invite):
+        assert body["ok"] is True and len(body["token"]) >= 40
+    assert len({signup["token"], login["token"], switch["token"], invite["token"]}) == 4

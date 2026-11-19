@@ -115,6 +115,7 @@ export function IntakeWizard() {
   const [vehicle, setVehicle] = useState<any>(EMPTY_VEHICLE);
   const [f, set, setAll] = useForm({ concern: "", notes: "", mileage_in: "", preferred_employee_id: "" });
   const [picked, setPicked] = useState<string[]>([]);
+  const [diagnosis, setDiagnosis] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<any | null>(null);
@@ -146,13 +147,15 @@ export function IntakeWizard() {
   }, [existing.data?.id]);
   const customerReady = customer || (isNew && newCustomer.name.trim());
   const vehicleReady = vehicleId || vehicle.make || vehicle.model || vehicle.vin || vehicle.plate;
-  const concernReady = f.concern.trim() || picked.length;
+  const concernReady = f.concern.trim() || picked.length || diagnosis;
+  // The shop's Diagnosis service, if it has been set up; it is offered either way.
+  const diagnosisService = (services.data ?? []).find((s) => s.is_diagnosis);
 
   async function createWorkOrder() {
     setBusy(true);
     setError("");
     const args: any = {
-      concern: f.concern || null, notes: f.notes || null, service_type_ids: picked,
+      concern: f.concern || null, notes: f.notes || null, service_type_ids: picked, diagnosis,
       mileage_in: f.mileage_in ? Number(f.mileage_in) : null, preferred_employee_id: f.preferred_employee_id || null,
     };
     if (customer) args.customer_id = customer.id;
@@ -245,13 +248,21 @@ export function IntakeWizard() {
         {step === 2 && (
           <Panel title="What do they need?">
             <div className="space-y-4">
-              <Field label="Customer's concern" hint="In their words. If you don't pick a service, a diagnosis is added so the visit can still be scheduled.">
+              <Field label="Customer's concern" hint="In their words. If you don't pick anything below, a Diagnosis is added so the visit can still be scheduled.">
                 <Textarea rows={3} autoFocus value={f.concern} onChange={set("concern")} placeholder="e.g. Grinding noise from the front when braking" />
               </Field>
               <div>
                 <span className="label">Services</span>
+                <label className={cx("mb-2 flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2", diagnosis ? "border-brand-500 bg-brand-50" : "border-slate-200 bg-white")}>
+                  <input type="checkbox" className="mt-0.5 accent-teal-700" checked={diagnosis} onChange={(e) => setDiagnosis(e.target.checked)} />
+                  <span className="text-sm">
+                    <span className="font-medium">{diagnosisService?.name ?? "Diagnosis"}</span>
+                    <span className="ml-2 text-slate-500">Find the cause of the concern before quoting a repair</span>
+                    <span className="block text-xs text-slate-500">{fmtMinutes(diagnosisService?.minutes ?? 60)} · {fmtMoney(diagnosisService?.price)}</span>
+                  </span>
+                </label>
                 <div className="grid gap-2 sm:grid-cols-2">
-                  {(services.data ?? []).filter((s) => s.active).map((s) => (
+                  {(services.data ?? []).filter((s) => s.active && !s.is_diagnosis).map((s) => (
                     <label key={s.id} className={cx("flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2", picked.includes(s.id) ? "border-brand-500 bg-brand-50" : "border-slate-200 bg-white")}>
                       <input type="checkbox" className="mt-0.5 accent-teal-700" checked={picked.includes(s.id)} onChange={(e) => setPicked((p) => (e.target.checked ? [...p, s.id] : p.filter((x) => x !== s.id)))} />
                       <span className="text-sm"><span className="font-medium">{s.name}</span><span className="block text-xs text-slate-500">{fmtMinutes(s.minutes)} · {fmtMoney(s.price)}</span></span>

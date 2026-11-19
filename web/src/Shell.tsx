@@ -2,11 +2,11 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { post } from "./api";
+import { endSession, post, sessionMode, startSession } from "./api";
 import { useCan, useMe, useQ } from "./store";
 import { cx } from "./lib";
 import { ChatDock } from "./parts/ChatDock";
-import { Badge, Button } from "./ui";
+import { Badge, Button, Notice } from "./ui";
 
 const NAV: { to: string; label: string; icon: string; vertical?: string; managers?: boolean }[] = [
   { to: "/", label: "Today", icon: "◎" },
@@ -31,6 +31,7 @@ export function Shell() {
   const qc = useQueryClient();
   const [chat, setChat] = useState(false);
   const [menu, setMenu] = useState(false);
+  const [cookieNoteHidden, setCookieNoteHidden] = useState(false);
   const pending = useQ<any[]>("change_requests.list", { status: "pending" }, { refetchInterval: 30_000 });
   const access = useQ<any>("access.list", {}, { enabled: can.manager, refetchInterval: 30_000 });
   const waiting = (pending.data?.filter((r) => r.can_decide).length ?? 0) + (access.data?.requests.filter((r: any) => r.status === "pending").length ?? 0);
@@ -38,14 +39,18 @@ export function Shell() {
 
   async function logout() {
     await post("/api/auth/logout");
+    endSession();
     qc.clear();
     qc.setQueryData(["me"], null);
     nav("/login");
   }
   async function switchShop(shop_id: string) {
-    await post("/api/auth/switch", { shop_id });
+    const res = await post("/api/auth/switch", { shop_id });
+    await startSession(res?.token);
+    setMenu(false);
     qc.clear();
-    location.assign("/");
+    nav("/");
+    await qc.invalidateQueries();
   }
 
   return (
@@ -95,7 +100,15 @@ export function Shell() {
           <Button onClick={() => setChat((c) => !c)} aria-pressed={chat}>{chat ? "Hide assistant" : "✦ Assistant"}</Button>
         </header>
         <div className="flex min-h-0 flex-1">
-          <main className="min-w-0 flex-1 overflow-y-auto p-5"><Outlet /></main>
+          <main className="min-w-0 flex-1 overflow-y-auto p-5">
+            {sessionMode() === "tab" && !cookieNoteHidden && (
+              <Notice className="mb-4 flex items-start justify-between gap-3">
+                <span>Your browser isn't keeping Shoppi's sign-in cookie, so you're signed in for this tab only and will need to sign in again in a new tab or window. To stay signed in, allow cookies for this site in your browser's privacy settings.</span>
+                <button className="shrink-0 text-amber-800 hover:underline" onClick={() => setCookieNoteHidden(true)}>Dismiss</button>
+              </Notice>
+            )}
+            <Outlet />
+          </main>
           {chat && <ChatDock onClose={() => setChat(false)} />}
         </div>
       </div>
