@@ -47,6 +47,11 @@ assistant) a language model — [Ollama](https://ollama.com) by default.
 ```bash
 # macOS example
 brew install postgresql@17 pgvector node && brew services start postgresql@17
+
+# Linux (Debian/Ubuntu) example: setup_db.sh runs psql as 'postgres' via sudo.
+# Ubuntu 24.04's own repo stops at Postgres 16, so add the PostgreSQL apt repo (PGDG) for 17:
+sudo apt install -y postgresql-common && sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh
+sudo apt install postgresql-17 postgresql-17-pgvector && sudo systemctl start postgresql
 ```
 
 ```bash
