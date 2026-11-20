@@ -39,7 +39,8 @@ Most recent additions: the Diagnosis option in intake, deleting customers and wo
 
 ## Setup
 
-Requirements: Python 3.11, Node 20+, PostgreSQL 15+ with the
+Requirements: Python 3.11, Node 26.13.1 (Vite 8 will not run on anything
+older than 20.19 / 22.12), PostgreSQL 15+ with the
 [pgvector](https://github.com/pgvector/pgvector) extension, and (for the
 assistant) a language model — [Ollama](https://ollama.com) by default.
 
