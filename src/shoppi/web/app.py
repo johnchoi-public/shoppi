@@ -501,7 +501,7 @@ def create_app(agent=None) -> FastAPI:
 
     @app.post("/api/chat")
     def chat(body: ChatIn, actor: Actor = Depends(current_actor)) -> StreamingResponse:
-        from shoppi.agent.build import thread_key
+        from shoppi.agent.build import ModelCallFailed, ToolCallFailed, thread_key
 
         # The thread belongs to this user in this shop; its checkpoint key is derived
         # here, never taken from the browser.
@@ -541,10 +541,20 @@ def create_app(agent=None) -> FastAPI:
                                     yield _sse({"type": "proposal", "change_request": proposal})
                                 else:
                                     yield _sse({"type": "tool_result", "name": msg.name, "content": content[:2000]})
-            except Exception as e:  # model/provider failure: tell the user, keep details in the server log
+            # Say which part failed, and keep the details in the server log.
+            except ToolCallFailed as e:  # a bug or outage behind one of the assistant's tools
+                log.exception("assistant tool %s failed", e.tool)
+                yield _sse({"type": "error", "message": f"The assistant couldn't finish: its \"{e.tool.replace('_', ' ')}\" step "
+                            f"failed ({type(e.__cause__).__name__}). This is a problem in the app, not the language model. "
+                            "The details are in the server log."})
+            except ModelCallFailed as e:
+                log.exception("assistant model call failed")
+                yield _sse({"type": "error", "message": "The assistant couldn't answer just now: the language model call failed "
+                            f"({type(e.__cause__).__name__}). Check that the model is running and available, then try again."})
+            except Exception as e:
                 log.exception("assistant failed")
-                yield _sse({"type": "error", "message": "The assistant couldn't answer just now "
-                            f"({type(e).__name__}). Check that the language model is running, then try again."})
+                yield _sse({"type": "error", "message": f"The assistant couldn't answer just now ({type(e).__name__}). "
+                            "The details are in the server log."})
             yield _sse({"type": "done"})
 
         # A sync generator is run in Starlette's threadpool, so blocking model and

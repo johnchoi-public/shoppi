@@ -68,6 +68,12 @@ class Conflict(AppError):
     status, code = 409, "conflict"
 
 
+class Unavailable(AppError):
+    """Something this request depends on (e.g. the embedding model) can't be reached."""
+
+    status, code = 503, "unavailable"
+
+
 # ---- Registry ---------------------------------------------------------------------
 
 
