@@ -243,6 +243,29 @@ def test_chat_streams_and_proposals_can_be_confirmed():
     assert other.post("/api/chat", json={"message": "hi", "thread_id": thread}).status_code == 404
 
 
+def test_chat_can_call_tools_that_take_no_arguments():
+    """LangChain discards injected arguments (such as ToolRuntime) for a tool whose
+    args schema has no fields, so tools must not depend on one to find the actor."""
+    from langchain_core.utils.pydantic import get_fields
+
+    from shoppi.agent.build import build_agent
+    from shoppi.agent.tools import build_tools
+
+    no_args = [t.name for t in build_tools() if not get_fields(t.args_schema)]
+    assert "employees_list" in no_args
+    script = [AIMessage(content="", tool_calls=[{"name": name, "args": {}, "id": str(i)}]) for i, name in enumerate(no_args)]
+    script.append(AIMessage(content="Done."))
+    c, _ = signed_up(agent=build_agent(ScriptedChatModel(script=script, seen=[])), starter=True)
+    events = sse(c.post("/api/chat", json={"message": "Who works here, and what is running low?"}))
+    assert [e for e in events if e["type"] == "error"] == []
+    results = {e["name"]: e["content"] for e in events if e["type"] == "tool_result"}
+    assert set(results) == set(no_args)
+    assert not any(content.startswith("Error") for content in results.values())
+    # They ran as the signed-in user in their own shop: the starter data is visible.
+    # (The streamed tool result is cut to 2000 characters, so it isn't parsed as JSON.)
+    assert q(c, "bays.list")["bays"][0]["name"] in results["bays_list"]
+
+
 def test_chat_reports_model_failure_without_leaking_details():
     from shoppi.agent.build import build_agent
 
@@ -250,7 +273,92 @@ def test_chat_reports_model_failure_without_leaking_details():
     events = sse(c.post("/api/chat", json={"message": "hello"}))
     error = next(e for e in events if e["type"] == "error")
     assert "couldn't answer" in error["message"] and "pop from empty list" not in error["message"]
+    assert "language model call failed (IndexError)" in error["message"]
     assert events[-1]["type"] == "done"
+
+
+def test_chat_reports_a_tool_failure_as_a_tool_failure():
+    """A crash inside a tool is the app's fault: the message names the step and
+    doesn't send the user off to check a language model that is working fine."""
+    from langchain_core.tools import StructuredTool
+
+    from shoppi.agent.build import build_agent
+
+    def broken() -> str:
+        raise RuntimeError("secret internal detail")
+
+    tool = StructuredTool.from_function(func=broken, name="parts_lookup", description="Always fails.")
+    script = [AIMessage(content="", tool_calls=[{"name": "parts_lookup", "args": {}, "id": "1"}]), AIMessage(content="never reached")]
+    c, _ = signed_up(agent=build_agent(ScriptedChatModel(script=script, seen=[]), tools=[tool]))
+    events = sse(c.post("/api/chat", json={"message": "look it up"}))
+    error = next(e for e in events if e["type"] == "error")["message"]
+    assert '"parts lookup" step failed (RuntimeError)' in error and "not the language model" in error
+    assert "secret internal detail" not in error and "is running" not in error
+    assert events[-1]["type"] == "done"
+    # The conversation is still usable afterwards.
+    again = sse(c.post("/api/chat", json={"message": "never mind", "thread_id": events[0]["thread_id"]}))
+    assert [e["type"] for e in again if e["type"] in ("token", "error")] == ["token"]
+
+
+def test_chat_explains_an_empty_knowledge_base_instead_of_returning_nothing():
+    from shoppi.agent.build import build_agent
+
+    class Offline(WordHashEmbeddings):
+        def embed_documents(self, texts):
+            raise ConnectionError("Failed to connect to Ollama.")
+
+    def ask(c) -> str:
+        events = sse(c.post("/api/chat", json={"message": "What is our brake warranty?"}))
+        assert [e for e in events if e["type"] == "error"] == []
+        return next(e for e in events if e["type"] == "tool_result")["content"]
+
+    def agent():
+        search = AIMessage(content="", tool_calls=[{"name": "documents_search", "args": {"query": "brake warranty"}, "id": "1"}])
+        return build_agent(ScriptedChatModel(script=[search, AIMessage(content="Done."), search, AIMessage(content="Done."),
+                                                     search, AIMessage(content="Done.")], seen=[]))
+
+    # Nothing has been added yet.
+    c, _ = signed_up(agent=agent())
+    assert q(c, "documents.search", {"query": "brake warranty"}) == []  # the screen's query still returns a plain list
+    reply = json.loads(ask(c))
+    assert reply["results"] == [] and "knowledge base is empty" in reply["why"] and "Do not search again" in reply["next"]
+
+    # A document was added while the embedding model was down: it exists but can't be found.
+    set_embeddings(Offline())
+    added = cmd(c, "documents.add", {"title": "Warranty policy", "kind": "note", "text": "Brake pads are covered for 24 months."})["result"]
+    assert added["status"] == "failed"
+    set_embeddings(WordHashEmbeddings())
+    why = json.loads(ask(c))["why"]
+    assert why == ('Nothing in the knowledge base can be searched yet. 1 document ("Warranty policy") was added, but indexing it '
+                   "failed at the time (ConnectionError), so its contents can't be found. The fix is to remove it and add it again "
+                   "on the Documents page.")
+    status = q(c, "documents.search_status")
+    assert (status["documents"], status["searchable"], status["not_indexed"][0]["title"]) == (1, 0, "Warranty policy")
+
+    # Once it is indexed, the search returns passages again, with no explanation wrapped around them.
+    cmd(c, "documents.delete", {"id": added["id"]})
+    cmd(c, "documents.add", {"title": "Warranty policy", "kind": "note", "text": "Brake pads are covered for 24 months."})
+    assert json.loads(ask(c))[0]["source"] == "Warranty policy"
+
+
+def test_search_says_so_when_the_embedding_model_is_unreachable():
+    from shoppi.agent.build import build_agent
+
+    class Down(WordHashEmbeddings):
+        def embed_query(self, text):
+            raise ConnectionError("Failed to connect to Ollama.")
+
+    script = [AIMessage(content="", tool_calls=[{"name": "documents_search", "args": {"query": "warranty"}, "id": "1"}]),
+              AIMessage(content="The knowledge base can't be searched right now.")]
+    c, _ = signed_up(agent=build_agent(ScriptedChatModel(script=script, seen=[])))
+    set_embeddings(Down())
+    r = c.post("/api/q/documents.search", json={"query": "warranty"})
+    assert r.status_code == 503 and "embedding model" in r.json()["error"]["message"]
+    # In chat this is a result the assistant can pass on, not a crash.
+    events = sse(c.post("/api/chat", json={"message": "What is our warranty?"}))
+    assert [e for e in events if e["type"] == "error"] == []
+    result = next(e for e in events if e["type"] == "tool_result")["content"]
+    assert result.startswith("Error: The knowledge base can't be searched right now") and "ConnectionError" in result
 
 
 def test_session_works_without_cookies_via_bearer_token():
