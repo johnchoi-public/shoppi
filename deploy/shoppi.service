@@ -1,0 +1,22 @@
+# Template: scripts/install_service.sh fills in @USER@, @APP_DIR@ and @PYTHON@
+# and installs the result as /etc/systemd/system/shoppi.service.
+[Unit]
+Description=shoppi web app
+After=network-online.target postgresql.service ollama.service
+Wants=network-online.target postgresql.service ollama.service
+
+[Service]
+User=@USER@
+# .env and data/uploads are resolved relative to the working directory.
+WorkingDirectory=@APP_DIR@
+# Bound to localhost only; Tailscale Serve/Funnel (or another proxy) publishes it.
+Environment=SHOPPI_HOST=127.0.0.1
+Environment=SHOPPI_PORT=8000
+ExecStart=@PYTHON@ scripts/run_web.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

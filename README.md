@@ -227,11 +227,78 @@ pytest
 
 ## Deploying
 
-- Serve behind HTTPS and set `SHOPPI_COOKIE_SECURE=true` and `SHOPPI_BASE_URL`.
-- Use real passwords for both database roles; keep the app on the restricted role.
-- Run `python scripts/migrate.py` on every release. It also re-applies security policies, so a new table can't ship unprotected.
-- Login and public-form rate limits are kept in process memory: with several web workers, add a shared limiter at the proxy.
-- Don't run `seed_demo.py` or `create_dev_login.py`: both create logins with known default passwords.
+The app runs as a systemd service bound to `127.0.0.1:8000`, and
+[Tailscale](https://tailscale.com) publishes it over HTTPS. **Serve** shares it
+only with devices on your tailnet; **Funnel** puts the same URL on the public
+internet (needed for customer intake links). There's no router port-forwarding,
+no domain to buy and no certificate to manage.
+
+```
+browser ──HTTPS──▶ tailscaled (serve / funnel) ──▶ 127.0.0.1:8000 shoppi ──▶ Postgres, Ollama (localhost)
+```
+
+### One-time setup
+
+```bash
+# 1. Ollama as a service (listens on 127.0.0.1:11434), plus the models
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull nemotron-3.5-lightning && ollama pull nomic-embed-text
+
+# 2. Real database passwords (setup_db.sh created the roles with dev defaults)
+sudo -u postgres psql -c "ALTER ROLE shoppi_app PASSWORD '<app password>'" \
+                      -c "ALTER ROLE shoppi_owner PASSWORD '<owner password>'"
+
+# 3. Tailscale admin console → DNS: turn on MagicDNS and HTTPS Certificates. Then find the name:
+tailscale status --json | jq -r .Self.DNSName      # e.g. myhost.tail1234.ts.net.
+```
+
+Then set these in `.env`:
+
+```bash
+SHOPPI_BASE_URL=https://myhost.tail1234.ts.net     # no trailing dot or slash
+SHOPPI_COOKIE_SECURE=true
+SHOPPI_TOKEN_KEY=<one non-empty key>                # only one line for it
+SHOPPI_DATABASE_URL=postgresql+psycopg://shoppi_app:<app password>@localhost:5432/shoppi
+SHOPPI_DATABASE_OWNER_URL=postgresql+psycopg://shoppi_owner:<owner password>@localhost:5432/shoppi
+```
+
+Then, with the app's Python environment active (`conda activate shoppi` or `source .venv/bin/activate`):
+
+```bash
+SKIP_PULL=1 ./scripts/deploy.sh         # install, migrate, build the UI
+./scripts/install_service.sh            # installs + starts shoppi.service and the nightly backup timer
+sudo tailscale serve --bg http://127.0.0.1:8000    # private: tailnet devices only
+```
+
+Install Tailscale on each phone or laptop that needs the app and open the `SHOPPI_BASE_URL` address.
+Keep the machine awake (`sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`).
+
+### Releasing
+
+```bash
+./scripts/deploy.sh      # git pull → pip install → migrate.py → npm build → restart → health check
+```
+
+`migrate.py` re-applies the security policies every time, so a new table can't ship unprotected.
+
+### Backups
+
+`shoppi-backup.timer` runs `scripts/backup.sh` nightly at 03:30. It writes a `pg_dump` of the database plus a tarball of the uploads to `~/shoppi-backups` and keeps the newest 14 of each.
+To restore, run `pg_restore --clean --if-exists -d <owner url> <dump>` and then `python scripts/migrate.py`.
+
+### Going public
+
+1. **Remove known-password logins first.** `seed_demo.py` and `create_dev_login.py` create logins with published default passwords. Use a database that never had them, or delete the demo shop and its users.
+2. In the Tailscale admin console, allow Funnel for this machine (the `funnel` node attribute).
+3. `sudo tailscale serve reset && sudo tailscale funnel --bg http://127.0.0.1:8000`. The URL stays the same, so `SHOPPI_BASE_URL`, existing sessions and intake links keep working.
+4. If Google sign-in or Calendar is configured, register `<SHOPPI_BASE_URL>/api/auth/google/callback` and `<SHOPPI_BASE_URL>/api/integrations/google_calendar/callback`.
+5. Want your own domain later? Point a Cloudflare Tunnel (or Caddy with ports 80 and 443 forwarded) at `127.0.0.1:8000` and change `SHOPPI_BASE_URL`. Nothing else changes.
+
+### Notes
+
+- Keep the app on the restricted `shoppi_app` role; only migrations use the owner.
+- Rate limits use the client address from `X-Forwarded-For`. uvicorn trusts that header only from `127.0.0.1`, which is where tailscaled connects from. The limits live in process memory, so stay on one worker or add a shared limiter at the proxy.
+- Never run `seed_demo.py` or `create_dev_login.py` against a deployment.
 
 ## Troubleshooting
 

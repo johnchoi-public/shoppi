@@ -1,0 +1,11 @@
+# Template: installed by scripts/install_service.sh. Triggered by shoppi-backup.timer.
+[Unit]
+Description=shoppi nightly backup (database dump + uploaded documents)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@APP_DIR@
+Environment=SHOPPI_PYTHON=@PYTHON@
+ExecStart=@APP_DIR@/scripts/backup.sh
