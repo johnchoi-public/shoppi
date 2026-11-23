@@ -21,7 +21,8 @@ export function TodayPage() {
   const flagged = (problems.data ?? []).filter((w) => w.needs_reassignment > 0);
   const unscheduled = (problems.data ?? []).filter((w) => w.status === "draft");
   const certs = (team.data ?? []).flatMap((e) => e.certs.filter((c: any) => c.status !== "valid" && e.active).map((c: any) => ({ ...c, employee: e.name })));
-  const free = (board.data ?? []).filter((b) => b.status === "free").length;
+  // A bay is in use when a job currently holds it, whether or not work is actively underway.
+  const inUse = (board.data ?? []).filter((b) => ["occupied", "paused", "holding", "scheduled_now"].includes(b.status)).length;
 
   return (
     <div>
@@ -30,7 +31,7 @@ export function TodayPage() {
 
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Jobs today" value={jobs.length} to="/calendar?view=day" />
-        <Stat label="Bays free now" value={board.data ? `${free} of ${board.data.length}` : "—"} to="/bays" />
+        <Stat label="Bays in use" value={board.data ? `${inUse} of ${board.data.length}` : "—"} to="/bays" />
         <Stat label="Waiting for review" value={intake.data?.length ?? "—"} to="/intake" tone={intake.data?.length ? "teal" : undefined} />
         <Stat label="Need attention" value={flagged.length + certs.filter((c) => c.status === "expired").length} to="/work-orders" tone={flagged.length ? "red" : undefined} />
       </div>

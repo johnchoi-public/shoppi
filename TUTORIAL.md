@@ -80,7 +80,7 @@ Then look at the result:
 
 ### Today
 
-The start page. Four counters (jobs today, bays free now, intake waiting for review, items needing attention), today's schedule, work orders not yet scheduled, jobs that need reassigning, certifications about to expire, and parts to reorder. Each links to the place where you deal with it.
+The start page. Four counters (jobs today, bays in use, intake waiting for review, items needing attention), today's schedule, work orders not yet scheduled, jobs that need reassigning, certifications about to expire, and parts to reorder. Each links to the place where you deal with it.
 
 ### Calendar
 
